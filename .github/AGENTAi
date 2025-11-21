@@ -1,0 +1,57 @@
+https://chatgpt.com/g/g-p-691f8e81dce48191ac668c95da4e78e9-ai-agents-coding-ai-documents/project
+Ah yep, good catch – “system message” is a bit abstract if you’re just in the normal ChatGPT app.
+
+Here’s what it means **and where to put it**, depending on how you’re using this DJ agent:
+
+---
+
+## 1. In the normal ChatGPT app (no custom GPTs)
+
+You don’t really *have* a visible “system message” box here.
+
+**What to do instead:**
+
+1. Start a **brand new chat**.
+2. Paste the whole DJ-agent block in as your **very first message**.
+3. After that, talk to it normally (e.g. “2-hour set, 11pm–1am warehouse, 126–130 BPM, help me build crates”).
+
+In this mode, that long prompt is just acting *like* a system message because it sets the rules before anything else.
+
+---
+
+## 2. In a **Custom GPT** (the “Create a GPT” screen in ChatGPT)
+
+This is the closest to a real “system message” for you.
+
+1. Click your name / profile → **“My GPTs”** → **“Create a GPT”**.
+2. Go to the **Configure** tab.
+3. In the big **“Instructions”** / “What should this GPT do?” area, paste the DJ-agent prompt.
+4. Give it a name like `FØPA – DJ Selector Co-Pilot`.
+5. Save it.
+
+Now you’ve literally turned that into your own DJ agent. Any time you select that GPT, it will behave with those rules.
+
+---
+
+## 3. If you’re using the **OpenAI API / code**
+
+Then “system message” is literal:
+
+```jsonc
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "<PASTE THE DJ-AGENT PROMPT HERE>"
+    },
+    {
+      "role": "user",
+      "content": "I’ve got a 2-hour set at 126–128 BPM, help structure crates."
+    }
+  ]
+}
+```
+
+---
+
+If you tell me **how you’re running this** (just inside ChatGPT app, or actually coding with the API, or something like DJ.Studio integrations later), I can tailor it exactly to that setup and even give you a trimmed “short” version to make it easier to manage.
