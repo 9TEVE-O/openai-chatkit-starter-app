@@ -200,7 +200,7 @@ export default function VerbaFix() {
                 </div>
                 <div>
                   <div className="text-xs text-zinc-500">
-                    Speaker {seg.speaker} • {format(new Date(seg.timestamp * 1000), 'mm:ss')}
+                    Speaker {seg.speaker} • {formatDuration(seg.timestamp)}
                   </div>
                   <div className="text-zinc-100 leading-relaxed">{seg.text}</div>
                 </div>
