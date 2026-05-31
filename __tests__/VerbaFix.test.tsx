@@ -2,6 +2,7 @@ import React from 'react';
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import userEvent from '@testing-library/user-event';
+import VerbaFix from '../components/VerbaFix';
 
 // ---------------------------------------------------------------------------
 // Module-level mocks
