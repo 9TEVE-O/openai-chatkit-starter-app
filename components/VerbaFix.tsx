@@ -1,25 +1,379 @@
 'use client';
 
-import React, { useState, useRef, useCallback, useMemo } from 'react';
-import { Mic, MicOff, Play, Download, RotateCcw, Users } from 'lucide-react';
-import { format } from 'date-fns';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 
-// ── Constants (SSOT) ─────────────────────────────────────────────────────────
-
+// ─── Constants ───────────────────────────────────────────────────────────────
 const MAX_SECONDS = 300;
+const SPEAKERS = ['A', 'B', 'C', 'D'] as const;
+type Speaker = typeof SPEAKERS[number];
 
-// ── Types (type safety: discriminated union for errors) ───────────────────────
+// ─── Types ───────────────────────────────────────────────────────────────────
+type RecordingError = 'permission_denied' | 'not_supported' | 'mime_unsupported' | 'unknown';
+type SttError = 'stt_unsupported' | 'stt_failed';
+type CopiedTarget = 'verbatim' | 'corrected' | null;
 
 interface Segment {
-  id: number;
-  speaker: 'A' | 'B';
+  id: string;
+  speaker: Speaker;
   text: string;
   timestamp: number;
+  editing?: boolean;
 }
 
-type RecordingError = 'permission_denied' | 'not_supported' | 'unknown';
+// ─── Design Tokens ───────────────────────────────────────────────────────────
+const STYLES = `
+  :root {
+    --void: #07070A;
+    --base: #0E0E13;
+    --raised: #141419;
+    --elevated: #1A1A22;
+    --float: #20202A;
+    --border-faint: rgba(255,255,255,0.05);
+    --border-soft: rgba(255,255,255,0.09);
+    --border-mid: rgba(255,255,255,0.14);
+    --border-sharp: rgba(255,255,255,0.22);
+    --text-primary: #EEEEF4;
+    --text-secondary: rgba(238,238,244,0.52);
+    --text-tertiary: rgba(238,238,244,0.28);
+    --text-hint: rgba(238,238,244,0.16);
+    --accent: #7C7CF8;
+    --accent-glow: rgba(124,124,248,0.18);
+    --accent-soft: rgba(124,124,248,0.08);
+    --record: #E879A0;
+    --record-glow: rgba(232,121,160,0.20);
+    --live: #34D399;
+    --live-glow: rgba(52,211,153,0.16);
+    --amber: #F59E0B;
+    --red: #F87171;
+    --red-glow: rgba(248,113,113,0.20);
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
+    --radius-xl: 22px;
+  }
 
-// ── Pure utilities (single responsibility, SSOT) ──────────────────────────────
+  .vf-root *, .vf-root *::before, .vf-root *::after { box-sizing: border-box; }
+
+  .vf-root {
+    position: relative;
+    min-height: 100vh;
+    background: var(--void);
+    color: var(--text-primary);
+    font-family: -apple-system, 'SF Pro Display', 'Inter', BlinkMacSystemFont, sans-serif;
+    overflow-x: hidden;
+  }
+
+  .vf-ambient {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    overflow: hidden;
+  }
+
+  .vf-orb {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.12;
+  }
+
+  .vf-orb-1 {
+    width: 600px;
+    height: 600px;
+    background: radial-gradient(circle, var(--accent) 0%, transparent 70%);
+    top: -200px;
+    right: -100px;
+    animation: ambient-drift 18s ease-in-out infinite;
+  }
+
+  .vf-orb-2 {
+    width: 500px;
+    height: 500px;
+    background: radial-gradient(circle, var(--record) 0%, transparent 70%);
+    bottom: -150px;
+    left: -100px;
+    animation: ambient-drift 24s ease-in-out infinite reverse;
+  }
+
+  .vf-content {
+    position: relative;
+    z-index: 1;
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+
+  /* Cards */
+  .vf-card {
+    background: var(--raised);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-xl);
+    position: relative;
+    transition: box-shadow 0.2s ease;
+  }
+
+  .vf-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 16px;
+    right: 16px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-mid), transparent);
+    border-radius: 50%;
+  }
+
+  .vf-card:hover {
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+
+  /* Physical Buttons */
+  .btn-physical {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    position: relative;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.15s ease;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    white-space: nowrap;
+  }
+
+  .btn-physical::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(180deg, rgba(255,255,255,0.07) 0%, transparent 50%);
+    pointer-events: none;
+  }
+
+  .btn-physical:not(:disabled):hover { transform: translateY(-1px); }
+  .btn-physical:not(:disabled):active { transform: translateY(1px) scale(0.995); }
+  .btn-physical:disabled { opacity: 0.38; cursor: not-allowed; }
+
+  .btn-sm { height: 34px; padding: 0 14px; font-size: 13px; border-radius: var(--radius-md); }
+  .btn-md { height: 42px; padding: 0 20px; font-size: 14px; border-radius: var(--radius-lg); }
+  .btn-lg { height: 52px; padding: 0 28px; font-size: 15px; border-radius: 14px; }
+
+  .btn-primary {
+    background: linear-gradient(160deg, #8A8AFF 0%, #6C6CF0 50%, #5858E0 100%);
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(92,92,220,0.35), 0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.15);
+  }
+  .btn-primary:not(:disabled):hover {
+    box-shadow: 0 4px 16px rgba(92,92,220,0.5), 0 2px 4px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.15);
+  }
+
+  .btn-record {
+    background: linear-gradient(160deg, #F090B8 0%, #E879A0 50%, #D45A88 100%);
+    color: #fff;
+    box-shadow: 0 2px 8px var(--record-glow), 0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.15);
+    animation: record-ring 2s ease-in-out infinite;
+  }
+  .btn-record:not(:disabled):hover {
+    box-shadow: 0 4px 20px var(--record-glow), 0 2px 4px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.15);
+  }
+
+  .btn-stop {
+    background: linear-gradient(160deg, #FF8080 0%, #F87171 50%, #E05555 100%);
+    color: #fff;
+    box-shadow: 0 2px 8px var(--red-glow), 0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.15);
+  }
+
+  .btn-ghost {
+    background: var(--elevated);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-soft);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+  .btn-ghost:not(:disabled):hover {
+    color: var(--text-primary);
+    background: var(--float);
+    border-color: var(--border-mid);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06);
+  }
+  .btn-ghost.active {
+    background: var(--accent-soft);
+    border-color: var(--accent-glow);
+    color: var(--accent);
+  }
+
+  .btn-signal {
+    background: linear-gradient(160deg, rgba(52,211,153,0.15) 0%, rgba(52,211,153,0.08) 100%);
+    color: var(--live);
+    border: 1px solid rgba(52,211,153,0.25);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.03);
+  }
+  .btn-signal.active {
+    background: rgba(52,211,153,0.18);
+    border-color: rgba(52,211,153,0.4);
+    box-shadow: 0 0 0 1px rgba(52,211,153,0.2), 0 2px 8px var(--live-glow);
+  }
+
+  /* Status Pill */
+  .vf-status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .vf-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-idle { background: rgba(255,255,255,0.06); color: var(--text-tertiary); }
+  .status-idle .vf-status-dot { background: var(--text-hint); }
+  .status-recording { background: var(--record-glow); color: var(--record); }
+  .status-recording .vf-status-dot { background: var(--record); animation: dot-pulse 1s ease-in-out infinite; }
+  .status-paused { background: rgba(245,158,11,0.12); color: var(--amber); }
+  .status-paused .vf-status-dot { background: var(--amber); }
+  .status-live { background: var(--live-glow); color: var(--live); }
+  .status-live .vf-status-dot { background: var(--live); animation: dot-pulse 1.4s ease-in-out infinite; }
+  .status-processing { background: var(--accent-soft); color: var(--accent); }
+  .status-processing .vf-status-dot { background: var(--accent); animation: dot-pulse 0.8s ease-in-out infinite; }
+
+  /* Segment rows */
+  .vf-segment-row {
+    animation: segment-in 0.3s ease both;
+    border-radius: var(--radius-md);
+    padding: 10px 12px;
+    transition: background 0.15s;
+  }
+  .vf-segment-row:hover { background: var(--elevated); }
+
+  .vf-speaker-badge {
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    flex-shrink: 0;
+    letter-spacing: 0.02em;
+  }
+
+  .vf-segment-actions { opacity: 0; transition: opacity 0.15s; }
+  .vf-segment-row:hover .vf-segment-actions,
+  .vf-segment-row:focus-within .vf-segment-actions { opacity: 1; }
+
+  /* Timer */
+  .vf-timer-ring { transition: stroke-dashoffset 1s linear; }
+
+  /* Transcript scroll */
+  .vf-transcript-scroll {
+    overflow-y: auto;
+    max-height: 280px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-mid) transparent;
+  }
+  .vf-transcript-scroll::-webkit-scrollbar { width: 4px; }
+  .vf-transcript-scroll::-webkit-scrollbar-track { background: transparent; }
+  .vf-transcript-scroll::-webkit-scrollbar-thumb { background: var(--border-mid); border-radius: 2px; }
+
+  /* Output areas */
+  .vf-output-text {
+    background: var(--elevated);
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-md);
+    padding: 14px;
+    font-size: 13.5px;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    min-height: 80px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    transition: border-color 0.15s;
+  }
+  .vf-output-text:focus-within { border-color: var(--border-mid); }
+
+  .vf-ai-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 7px;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-glow);
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* Error banner */
+  .vf-error-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: rgba(248,113,113,0.08);
+    border: 1px solid rgba(248,113,113,0.2);
+    border-radius: var(--radius-md);
+    font-size: 13px;
+    color: var(--red);
+  }
+
+  /* Divider */
+  .vf-divider {
+    height: 1px;
+    background: var(--border-faint);
+    border: none;
+    margin: 0;
+  }
+
+  /* Keyframes */
+  @keyframes breathe {
+    0%, 100% { opacity: 0.9; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.03); }
+  }
+  @keyframes ambient-drift {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33% { transform: translate(8px, -6px) scale(1.02); }
+    66% { transform: translate(-4px, 4px) scale(0.98); }
+  }
+  @keyframes record-ring {
+    0%, 100% { box-shadow: 0 2px 8px var(--record-glow), 0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.15); }
+    50% { box-shadow: 0 2px 8px var(--record-glow), 0 0 0 4px var(--record-glow), 0 1px 2px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.15); }
+  }
+  @keyframes dot-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+  }
+  @keyframes segment-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes signal-sweep {
+    0% { background-position: -200% center; }
+    100% { background-position: 200% center; }
+  }
+`;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function formatTimestamp(seconds: number): string {
+  const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+  const s = (seconds % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
+}
 
 function correctGrammar(text: string): string {
   let out = text.replace(/\bi\b/g, 'I').replace(/\s+/g, ' ').trim();
@@ -28,356 +382,726 @@ function correctGrammar(text: string): string {
   return out;
 }
 
-function formatTimestamp(seconds: number): string {
-  return format(new Date(seconds * 1000), 'mm:ss');
+function generateId(): string {
+  return Math.random().toString(36).slice(2, 9);
 }
 
-function errorMessage(err: RecordingError): string {
-  switch (err) {
-    case 'permission_denied':
-      return 'Microphone access was denied. Please allow access in your browser settings.';
-    case 'not_supported':
-      return 'Your browser does not support audio recording.';
-    default:
-      return 'Could not start recording. Please try again.';
-  }
-}
+// ─── Speaker badge colours ────────────────────────────────────────────────────
+const SPEAKER_STYLES: Record<Speaker, { background: string; color: string }> = {
+  A: { background: 'linear-gradient(135deg,#7C7CF8,#5A5AE0)', color: '#fff' },
+  B: { background: 'linear-gradient(135deg,#E879A0,#C45580)', color: '#fff' },
+  C: { background: 'linear-gradient(135deg,#34D399,#1FAD78)', color: '#fff' },
+  D: { background: 'linear-gradient(135deg,#F59E0B,#D07A00)', color: '#fff' },
+};
 
-// ── Atoms ─────────────────────────────────────────────────────────────────────
-
-function TimerDisplay({ seconds }: { seconds: number }) {
-  const mm = Math.floor(seconds / 60).toString();
-  const ss = (seconds % 60).toString().padStart(2, '0');
+// ─── Atoms ───────────────────────────────────────────────────────────────────
+function BrandMark({ size = 32, isRecording = false, isLive = false }: {
+  size?: number; isRecording?: boolean; isLive?: boolean;
+}) {
+  const color = isRecording ? 'var(--record)' : isLive ? 'var(--live)' : 'var(--accent)';
   return (
-    <div
-      role="timer"
-      aria-label={`${mm} minutes and ${ss} seconds remaining`}
-      className="bg-zinc-900 rounded-3xl px-10 py-6 text-center border border-zinc-800"
-    >
-      <div aria-hidden="true" className="text-7xl font-mono font-semibold tabular-nums">
-        {mm}:{ss}
-      </div>
-      <p className="text-xs text-zinc-500 mt-1">MAX 5 MINUTES</p>
-    </div>
-  );
-}
-
-function SpeakerAvatar({ speaker }: { speaker: 'A' | 'B' }) {
-  return (
-    <div
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 100 100"
+      fill="none"
       aria-hidden="true"
-      className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center font-bold flex-shrink-0 mt-1"
+      style={{ animation: 'breathe 4s ease-in-out infinite', flexShrink: 0 }}
     >
-      {speaker}
-    </div>
+      {[0, 90, 180, 270].map((rotation) => (
+        <g key={rotation} transform={`rotate(${rotation}, 50, 50)`}>
+          <path
+            d="M 50 50 C 54 43, 62 38, 62 29 C 62 21, 55 18, 50 22 C 45 26, 46 35, 50 50 Z"
+            fill={color}
+            opacity={0.9}
+          />
+        </g>
+      ))}
+      <circle cx="50" cy="50" r="4" fill={color} opacity={0.7} />
+      <circle cx="50" cy="50" r="45" stroke={color} strokeWidth="0.5" opacity={0.15} />
+    </svg>
   );
 }
 
-// ── Molecules ─────────────────────────────────────────────────────────────────
-
-function TranscriptSegment({ seg }: { seg: Segment }) {
+function StatusPill({ isRecording, isPaused, isLive }: {
+  isRecording: boolean; isPaused: boolean; isLive: boolean;
+}) {
+  const [status, label] = isRecording && isPaused
+    ? ['paused', 'Paused']
+    : isRecording
+    ? ['recording', 'Recording']
+    : isLive
+    ? ['live', 'Live']
+    : ['idle', 'Idle'];
   return (
-    <div className="flex gap-4">
-      <SpeakerAvatar speaker={seg.speaker} />
-      <div>
-        <div className="text-xs text-zinc-500">
-          <span className="sr-only">Speaker </span>
-          {seg.speaker} &bull; {formatTimestamp(seg.timestamp)}
+    <span className={`vf-status-pill status-${status}`}>
+      <span className="vf-status-dot" />
+      {label}
+    </span>
+  );
+}
+
+function TimerDisplay({ seconds, isRecording, isPaused }: {
+  seconds: number; isRecording: boolean; isPaused: boolean;
+}) {
+  const radius = 54;
+  const circumference = 2 * Math.PI * radius;
+  const progress = seconds / MAX_SECONDS;
+  const offset = circumference * (1 - progress);
+  const strokeColor = isPaused ? 'var(--amber)' : isRecording ? 'var(--record)' : 'var(--border-mid)';
+  const timeLeft = MAX_SECONDS - seconds;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+      <div style={{ position: 'relative', width: 128, height: 128 }}>
+        <svg width="128" height="128" viewBox="0 0 128 128" style={{ transform: 'rotate(-90deg)' }}>
+          <circle cx="64" cy="64" r={radius} fill="none" stroke="var(--border-faint)" strokeWidth="2" />
+          <circle
+            cx="64" cy="64" r={radius}
+            fill="none"
+            stroke={strokeColor}
+            strokeWidth="2"
+            strokeDasharray={circumference}
+            strokeDashoffset={offset}
+            strokeLinecap="round"
+            className="vf-timer-ring"
+            style={{ opacity: isRecording ? 1 : 0.3 }}
+          />
+        </svg>
+        <div style={{
+          position: 'absolute', inset: 0,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <span style={{
+            fontSize: 36, fontWeight: 300, letterSpacing: '-0.02em',
+            color: isPaused ? 'var(--amber)' : isRecording ? 'var(--record)' : 'var(--text-secondary)',
+            fontVariantNumeric: 'tabular-nums',
+            lineHeight: 1,
+          }}>
+            {formatTimestamp(seconds)}
+          </span>
+          <span style={{ fontSize: 10, color: 'var(--text-hint)', marginTop: 4, letterSpacing: '0.05em' }}>
+            {isRecording ? `${formatTimestamp(timeLeft)} left` : 'max 5 min'}
+          </span>
         </div>
-        <div className="text-zinc-100 leading-relaxed">{seg.text}</div>
       </div>
     </div>
   );
 }
 
-function ErrorBanner({ err }: { err: RecordingError }) {
+// ─── Physical Button ──────────────────────────────────────────────────────────
+function PhysicalButton({
+  onClick, disabled = false, variant = 'ghost', size = 'md', active = false,
+  children, ariaLabel,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  variant?: 'primary' | 'record' | 'stop' | 'ghost' | 'signal';
+  size?: 'sm' | 'md' | 'lg';
+  active?: boolean;
+  children: React.ReactNode;
+  ariaLabel?: string;
+}) {
   return (
-    <div
-      role="alert"
-      className="mb-6 px-6 py-4 bg-red-950 border border-red-700 rounded-2xl text-red-300 text-sm text-center"
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      className={`btn-physical btn-${variant} btn-${size}${active ? ' active' : ''}`}
     >
-      {errorMessage(err)}
+      {children}
+    </button>
+  );
+}
+
+// ─── Card ─────────────────────────────────────────────────────────────────────
+function Card({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+  return (
+    <div className="vf-card" style={style}>
+      {children}
     </div>
   );
 }
 
-// ── Custom hook (single responsibility: recording logic isolated from UI) ──────
+// ─── Error Banner ─────────────────────────────────────────────────────────────
+function ErrorBanner({ message }: { message: string }) {
+  return (
+    <div className="vf-error-banner" role="alert">
+      <span style={{
+        width: 8, height: 8, borderRadius: '50%',
+        background: 'var(--red)', flexShrink: 0,
+      }} />
+      {message}
+    </div>
+  );
+}
 
-function useRecorder(onStop: (url: string) => void) {
+// ─── Segment Row ──────────────────────────────────────────────────────────────
+function SegmentRow({
+  segment, index, onEdit, onDelete, onSave, onCancelEdit,
+}: {
+  segment: Segment;
+  index: number;
+  onEdit: (id: string) => void;
+  onDelete: (id: string) => void;
+  onSave: (id: string, text: string) => void;
+  onCancelEdit: (id: string) => void;
+}) {
+  const [draft, setDraft] = useState(segment.text);
+  const badgeStyle = SPEAKER_STYLES[segment.speaker];
+
+  return (
+    <div
+      className="vf-segment-row"
+      style={{ display: 'flex', gap: 10, alignItems: 'flex-start', animationDelay: `${index * 40}ms` }}
+    >
+      <div
+        className="vf-speaker-badge"
+        style={{ ...badgeStyle, marginTop: 2 }}
+        aria-label={`Speaker ${segment.speaker}`}
+      >
+        {segment.speaker}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+          <span style={{ fontSize: 11, color: 'var(--text-hint)', fontVariantNumeric: 'tabular-nums' }}>
+            {formatTimestamp(segment.timestamp)}
+          </span>
+        </div>
+        {segment.editing ? (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') onSave(segment.id, draft);
+                if (e.key === 'Escape') onCancelEdit(segment.id);
+              }}
+              autoFocus
+              style={{
+                flex: 1, background: 'var(--elevated)', border: '1px solid var(--border-mid)',
+                borderRadius: 6, padding: '4px 8px', color: 'var(--text-primary)',
+                fontSize: 13, fontFamily: 'inherit', outline: 'none',
+              }}
+            />
+            <button
+              onClick={() => onSave(segment.id, draft)}
+              style={{
+                background: 'var(--accent)', color: '#fff', border: 'none',
+                borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12,
+              }}
+            >Save</button>
+            <button
+              onClick={() => onCancelEdit(segment.id)}
+              style={{
+                background: 'var(--elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-soft)',
+                borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12,
+              }}
+            >Cancel</button>
+          </div>
+        ) : (
+          <span style={{ fontSize: 13.5, color: 'var(--text-primary)', lineHeight: 1.55 }}>
+            {segment.text}
+          </span>
+        )}
+      </div>
+      {!segment.editing && (
+        <div className="vf-segment-actions" style={{ display: 'flex', gap: 4, flexShrink: 0, marginTop: 2 }}>
+          <button
+            onClick={() => onEdit(segment.id)}
+            aria-label="Edit segment"
+            style={{
+              background: 'var(--elevated)', border: '1px solid var(--border-soft)',
+              borderRadius: 5, width: 26, height: 26, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'var(--text-tertiary)', fontSize: 12,
+            }}
+          >✎</button>
+          <button
+            onClick={() => onDelete(segment.id)}
+            aria-label="Delete segment"
+            style={{
+              background: 'var(--elevated)', border: '1px solid var(--border-soft)',
+              borderRadius: 5, width: 26, height: 26, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'var(--text-tertiary)', fontSize: 12,
+            }}
+          >×</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Custom Hooks ─────────────────────────────────────────────────────────────
+function useRecorder(onSegmentReady: (duration: number) => void) {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const timeLeftRef = useRef(MAX_SECONDS);
-
+  const chunksRef = useRef<Blob[]>([]);
   const [isRecording, setIsRecording] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(MAX_SECONDS);
+  const [isPaused, setIsPaused] = useState(false);
   const [error, setError] = useState<RecordingError | null>(null);
+  const onSegmentReadyRef = useRef(onSegmentReady);
+  useEffect(() => { onSegmentReadyRef.current = onSegmentReady; }, [onSegmentReady]);
+
+  const start = useCallback(async () => {
+    setError(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('not_supported');
+      return false;
+    }
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setError('permission_denied');
+      return false;
+    }
+    const mimeType = ['audio/webm', 'audio/ogg', 'audio/mp4'].find(
+      (t) => MediaRecorder.isTypeSupported(t),
+    );
+    if (!mimeType) {
+      setError('mime_unsupported');
+      return false;
+    }
+    const mr = new MediaRecorder(stream, { mimeType });
+    chunksRef.current = [];
+    mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+    mr.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+    };
+    mr.start();
+    mediaRecorderRef.current = mr;
+    setIsRecording(true);
+    setIsPaused(false);
+    return true;
+  }, []);
+
+  const pause = useCallback(() => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.pause();
+      setIsPaused(true);
+    }
+  }, []);
+
+  const resume = useCallback(() => {
+    if (mediaRecorderRef.current?.state === 'paused') {
+      mediaRecorderRef.current.resume();
+      setIsPaused(false);
+    }
+  }, []);
 
   const stop = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
     }
-    if (timerRef.current) clearInterval(timerRef.current);
     setIsRecording(false);
+    setIsPaused(false);
   }, []);
 
-  const start = useCallback(async () => {
-    setError(null);
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (err) {
-      if (err instanceof DOMException) {
-        if (err.name === 'NotAllowedError') setError('permission_denied');
-        else if (err.name === 'NotSupportedError') setError('not_supported');
-        else setError('unknown');
-      } else {
-        setError('unknown');
-      }
-      return;
-    }
-
-    const recorder = new MediaRecorder(stream);
-    mediaRecorderRef.current = recorder;
-    audioChunksRef.current = [];
-    timeLeftRef.current = MAX_SECONDS;
-
-    recorder.ondataavailable = (e) => { audioChunksRef.current.push(e.data); };
-    recorder.onstop = () => {
-      const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-      onStop(URL.createObjectURL(blob));
-      stream.getTracks().forEach((t) => t.stop());
-    };
-
-    recorder.start();
-    setIsRecording(true);
-    setTimeLeft(MAX_SECONDS);
-
-    timerRef.current = setInterval(() => {
-      timeLeftRef.current -= 1;
-      if (timeLeftRef.current <= 0) {
-        stop();
-        setTimeLeft(0);
-      } else {
-        setTimeLeft(timeLeftRef.current);
-      }
-    }, 1000);
-  }, [onStop, stop]);
-
-  const reset = useCallback(() => {
-    stop();
-    setTimeLeft(MAX_SECONDS);
-    timeLeftRef.current = MAX_SECONDS;
-    setError(null);
-  }, [stop]);
-
-  return { isRecording, timeLeft, timeLeftRef, error, start, stop, reset };
+  return { isRecording, isPaused, error, start, pause, resume, stop };
 }
 
-// ── Organism (VerbaFix page) ──────────────────────────────────────────────────
+function useSpeechRecognition(
+  onFinal: (text: string) => void,
+  onInterim: (text: string) => void,
+) {
+  const recognitionRef = useRef<any>(null);
+  const [isLive, setIsLive] = useState(false);
+  const [sttError, setSttError] = useState<SttError | null>(null);
+  const onFinalRef = useRef(onFinal);
+  const onInterimRef = useRef(onInterim);
+  useEffect(() => { onFinalRef.current = onFinal; }, [onFinal]);
+  useEffect(() => { onInterimRef.current = onInterim; }, [onInterim]);
 
-export default function VerbaFix() {
-  const [currentSpeaker, setCurrentSpeaker] = useState<'A' | 'B'>('A');
-  const [segments, setSegments] = useState<Segment[]>([]);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  const handleStop = useCallback((url: string) => setAudioUrl(url), []);
-  const { isRecording, timeLeft, timeLeftRef, error, start, stop, reset } = useRecorder(handleStop);
-
-  const addSegment = useCallback((text: string) => {
-    if (!text.trim()) return;
-    setSegments((prev) => [
-      ...prev,
-      { id: Date.now(), speaker: currentSpeaker, text: text.trim(), timestamp: MAX_SECONDS - timeLeftRef.current },
-    ]);
-  }, [currentSpeaker, timeLeftRef]);
-
-  // Memoised derived output — avoids recomputing on every render
-  const verbatim = useMemo(
-    () => segments.map((s) => `Speaker ${s.speaker} (${formatTimestamp(s.timestamp)}): ${s.text}`).join('\n\n'),
-    [segments],
-  );
-
-  const corrected = useMemo(
-    () => segments.map((s) => `Speaker ${s.speaker}: ${correctGrammar(s.text)}`).join('\n\n'),
-    [segments],
-  );
-
-  const exportTxt = useCallback(() => {
-    const content =
-      `VERBAFIX TRANSCRIPT\n${new Date().toLocaleString()}\n\n` +
-      `=== VERBATIM ===\n${verbatim}\n\n` +
-      `=== GRAMMATICALLY CORRECTED ===\n${corrected}`;
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `conversation-${Date.now()}.txt`;
-    a.click();
-  }, [verbatim, corrected]);
-
-  const handleManualInput = useCallback(() => {
-    const text = prompt('What did the current speaker say? (This will be added verbatim)');
-    if (text) addSegment(text);
-  }, [addSegment]);
-
-  const toggleSpeaker = useCallback(() => {
-    setCurrentSpeaker((s) => (s === 'A' ? 'B' : 'A'));
+  const start = useCallback(() => {
+    const SpeechRecognition =
+      (typeof window !== 'undefined') &&
+      ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+    if (!SpeechRecognition) {
+      setSttError('stt_unsupported');
+      return;
+    }
+    const rec = new SpeechRecognition();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = 'en-US';
+    rec.onresult = (event: any) => {
+      const last = event.results[event.results.length - 1];
+      if (last.isFinal) {
+        onFinalRef.current(last[0].transcript);
+      } else {
+        onInterimRef.current(last[0].transcript);
+      }
+    };
+    rec.onerror = () => setSttError('stt_failed');
+    rec.onend = () => setIsLive(false);
+    rec.start();
+    recognitionRef.current = rec;
+    setIsLive(true);
+    setSttError(null);
   }, []);
 
-  const resetAll = useCallback(() => {
-    reset();
+  const stop = useCallback(() => {
+    recognitionRef.current?.stop();
+    setIsLive(false);
+  }, []);
+
+  return { isLive, sttError, start, stop };
+}
+
+// ─── Error message map ────────────────────────────────────────────────────────
+const ERROR_MESSAGES: Record<RecordingError | SttError, string> = {
+  permission_denied: 'Microphone access was denied. Please allow mic access and try again.',
+  not_supported: 'Audio recording is not supported in this browser.',
+  mime_unsupported: 'No supported audio format found in this browser.',
+  unknown: 'An unexpected error occurred.',
+  stt_unsupported: 'Live transcription is not supported in this browser.',
+  stt_failed: 'Live transcription encountered an error.',
+};
+
+// ─── Main Organism ────────────────────────────────────────────────────────────
+export default function VerbaFix() {
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const [activeSpeaker, setActiveSpeaker] = useState<Speaker>('A');
+  const [secondsElapsed, setSecondsElapsed] = useState(0);
+  const [interim, setInterim] = useState('');
+  const [copied, setCopied] = useState<CopiedTarget>(null);
+  const [manualText, setManualText] = useState('');
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const secondsRef = useRef(0);
+
+  const addSegment = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setSegments((prev) => [
+      ...prev,
+      { id: generateId(), speaker: activeSpeaker, text: trimmed, timestamp: secondsRef.current },
+    ]);
+  }, [activeSpeaker]);
+
+  const addSegmentRef = useRef<(text: string) => void>(() => {});
+  useEffect(() => { addSegmentRef.current = addSegment; }, [addSegment]);
+
+  const handleFinal = useCallback((text: string) => {
+    addSegmentRef.current(text);
+    setInterim('');
+  }, []);
+
+  const handleInterim = useCallback((text: string) => {
+    setInterim(text);
+  }, []);
+
+  const { isRecording, isPaused, error: recError, start: startRec, pause: pauseRec, resume: resumeRec, stop: stopRec } =
+    useRecorder(() => {});
+
+  const { isLive, sttError, start: startStt, stop: stopStt } =
+    useSpeechRecognition(handleFinal, handleInterim);
+
+  const startSession = useCallback(async () => {
+    const ok = await startRec();
+    if (!ok) return;
+    secondsRef.current = 0;
+    setSecondsElapsed(0);
     setSegments([]);
-    setAudioUrl(null);
-  }, [reset]);
+    setInterim('');
+    timerRef.current = setInterval(() => {
+      secondsRef.current += 1;
+      setSecondsElapsed(secondsRef.current);
+      if (secondsRef.current >= MAX_SECONDS) {
+        stopRec();
+        stopStt();
+        if (timerRef.current) clearInterval(timerRef.current);
+      }
+    }, 1000);
+  }, [startRec, stopRec, stopStt]);
+
+  const stopSession = useCallback(() => {
+    stopRec();
+    stopStt();
+    if (timerRef.current) clearInterval(timerRef.current);
+    setInterim('');
+  }, [stopRec, stopStt]);
+
+  const togglePause = useCallback(() => {
+    if (isPaused) resumeRec(); else pauseRec();
+  }, [isPaused, resumeRec, pauseRec]);
+
+  const toggleStt = useCallback(() => {
+    if (isLive) stopStt(); else startStt();
+  }, [isLive, startStt, stopStt]);
+
+  useEffect(() => () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+  }, []);
+
+  const editSegment = useCallback((id: string) => {
+    setSegments((prev) => prev.map((s) => s.id === id ? { ...s, editing: true } : s));
+  }, []);
+
+  const saveSegment = useCallback((id: string, text: string) => {
+    setSegments((prev) => prev.map((s) => s.id === id ? { ...s, text, editing: false } : s));
+  }, []);
+
+  const cancelEdit = useCallback((id: string) => {
+    setSegments((prev) => prev.map((s) => s.id === id ? { ...s, editing: false } : s));
+  }, []);
+
+  const deleteSegment = useCallback((id: string) => {
+    setSegments((prev) => prev.filter((s) => s.id !== id));
+  }, []);
+
+  const fullVerbatim = useMemo(() =>
+    segments.map((s) => `Speaker ${s.speaker} (${formatTimestamp(s.timestamp)}): ${s.text}`).join('\n'),
+  [segments]);
+
+  const fullCorrected = useMemo(() =>
+    segments.map((s) => `Speaker ${s.speaker} (${formatTimestamp(s.timestamp)}): ${correctGrammar(s.text)}`).join('\n'),
+  [segments]);
+
+  const copyToClipboard = useCallback((text: string, target: 'verbatim' | 'corrected') => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(target);
+      setTimeout(() => setCopied(null), 2000);
+    });
+  }, []);
+
+  const resetSession = useCallback(() => {
+    stopSession();
+    setSegments([]);
+    setSecondsElapsed(0);
+    setInterim('');
+    setCopied(null);
+  }, [stopSession]);
+
+  const addManualSegment = useCallback(() => {
+    addSegment(manualText);
+    setManualText('');
+  }, [addSegment, manualText]);
+
+  const activeError = recError || sttError;
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-white p-6">
-      <main className="max-w-4xl mx-auto">
-        <h1 className="text-5xl font-bold mb-2 text-center bg-gradient-to-r from-violet-400 to-fuchsia-400 bg-clip-text text-transparent">
-          VerbaFix
-        </h1>
-        <p className="text-center text-zinc-400 mb-10">
-          5-minute conversation dictator &bull; Verbatim + Grammar Fixed
-        </p>
-
-        {/* Inline error — role=alert, no alert() calls */}
-        {error && <ErrorBanner err={error} />}
-
-        {/* Timer */}
-        <div className="flex justify-center mb-8">
-          <TimerDisplay seconds={timeLeft} />
+    <>
+      <style dangerouslySetInnerHTML={{ __html: STYLES }} />
+      <div className="vf-root">
+        {/* Ambient background */}
+        <div className="vf-ambient" aria-hidden="true">
+          <div className="vf-orb vf-orb-1" />
+          <div className="vf-orb vf-orb-2" />
         </div>
 
-        {/* Controls */}
-        <div className="flex gap-4 justify-center mb-8">
-          <button
-            onClick={isRecording ? stop : start}
-            aria-pressed={isRecording}
-            aria-label={isRecording ? 'Stop recording' : 'Start recording'}
-            className={`px-8 py-4 rounded-2xl flex items-center gap-3 text-lg font-medium transition-all ${
-              isRecording ? 'bg-red-600 hover:bg-red-700' : 'bg-violet-600 hover:bg-violet-700'
-            }`}
-          >
-            {isRecording
-              ? <MicOff className="w-6 h-6" aria-hidden="true" />
-              : <Mic className="w-6 h-6" aria-hidden="true" />}
-            {isRecording ? 'Stop Recording' : 'Start Recording'}
-          </button>
-
-          <button
-            onClick={toggleSpeaker}
-            aria-label={`Switch speaker (currently ${currentSpeaker})`}
-            className="px-6 py-4 bg-zinc-800 hover:bg-zinc-700 rounded-2xl flex items-center gap-3"
-          >
-            <Users className="w-6 h-6" aria-hidden="true" />
-            Speaker {currentSpeaker}
-          </button>
-        </div>
-
-        {/* Quick add */}
-        <div className="text-center mb-8">
-          <button
-            onClick={handleManualInput}
-            disabled={!isRecording}
-            aria-label="Add what the current speaker just said"
-            className="text-sm px-5 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 rounded-full"
-          >
-            Add what was just said &rarr;
-          </button>
-          <p className="text-xs text-zinc-500 mt-2">Switch speaker then tap to log</p>
-        </div>
-
-        {/* Transcript */}
-        <section
-          aria-label="Live transcript"
-          className="bg-zinc-900 border border-zinc-800 rounded-3xl p-8 min-h-[400px] mb-8"
-        >
-          <div className="flex justify-between mb-6">
-            <h2 className="text-xl font-semibold">Live Transcript</h2>
-            <div
-              aria-live="polite"
-              aria-atomic="true"
-              className="text-sm text-zinc-400"
-            >
-              {segments.length} {segments.length === 1 ? 'segment' : 'segments'}
-            </div>
-          </div>
-
-          <div
-            className="space-y-6 max-h-[500px] overflow-auto pr-4"
-            aria-live="polite"
-            aria-relevant="additions"
-          >
-            {segments.length === 0 ? (
-              <p className="text-center text-zinc-500 py-20">
-                Recording will appear here&hellip;<br />
-                Switch speakers and add segments
+        <main className="vf-content">
+          {/* Header */}
+          <header style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 32 }}>
+            <BrandMark size={36} isRecording={isRecording} isLive={isLive} />
+            <div style={{ flex: 1 }}>
+              <h1 style={{
+                fontSize: 20, fontWeight: 600, letterSpacing: '-0.01em',
+                color: 'var(--text-primary)', margin: 0, lineHeight: 1.2,
+              }}>VerbaFix</h1>
+              <p style={{ fontSize: 12, color: 'var(--text-tertiary)', margin: 0, letterSpacing: '0.02em' }}>
+                Precision conversation recorder
               </p>
-            ) : (
-              segments.map((seg) => <TranscriptSegment key={seg.id} seg={seg} />)
-            )}
-          </div>
-        </section>
+            </div>
+            <StatusPill isRecording={isRecording} isPaused={isPaused} isLive={isLive} />
+          </header>
 
-        {/* Output panels */}
-        {segments.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-            <section
-              aria-label="Verbatim transcript"
-              className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6"
-            >
-              <h3 className="font-semibold mb-4">Verbatim</h3>
-              <pre className="whitespace-pre-wrap text-sm text-zinc-300 font-mono leading-relaxed">
-                {verbatim}
-              </pre>
-            </section>
-
-            <section
-              aria-label="Grammatically corrected transcript"
-              className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6"
-            >
-              <h3 className="font-semibold mb-4">Grammatically Corrected</h3>
-              <pre className="whitespace-pre-wrap text-sm text-emerald-300 font-mono leading-relaxed">
-                {corrected}
-              </pre>
-            </section>
-          </div>
-        )}
-
-        {/* Actions */}
-        <div className="flex flex-wrap gap-4 justify-center">
-          {audioUrl && (
-            <button
-              onClick={() => audioRef.current?.play()}
-              aria-label="Play back the recording"
-              className="flex items-center gap-3 px-6 py-3 bg-zinc-800 hover:bg-zinc-700 rounded-2xl"
-            >
-              <Play className="w-5 h-5" aria-hidden="true" /> Play Recording
-            </button>
+          {/* Error banner */}
+          {activeError && (
+            <div style={{ marginBottom: 16 }}>
+              <ErrorBanner message={ERROR_MESSAGES[activeError]} />
+            </div>
           )}
 
-          <button
-            onClick={exportTxt}
-            disabled={segments.length === 0}
-            aria-label="Export transcript as a text file"
-            className="flex items-center gap-3 px-6 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 rounded-2xl"
-          >
-            <Download className="w-5 h-5" aria-hidden="true" /> Export TXT
-          </button>
+          {/* Timer card */}
+          <Card style={{ padding: '28px 24px', marginBottom: 16, textAlign: 'center' }}>
+            <TimerDisplay
+              seconds={secondsElapsed}
+              isRecording={isRecording}
+              isPaused={isPaused}
+            />
+          </Card>
 
-          <button
-            onClick={resetAll}
-            aria-label="Start a new conversation"
-            className="flex items-center gap-3 px-6 py-3 bg-zinc-800 hover:bg-zinc-700 rounded-2xl"
-          >
-            <RotateCcw className="w-5 h-5" aria-hidden="true" /> New Conversation
-          </button>
-        </div>
+          {/* Controls */}
+          <Card style={{ padding: '20px 24px', marginBottom: 16 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'center' }}>
+              {!isRecording ? (
+                <PhysicalButton variant="record" size="lg" onClick={startSession} ariaLabel="Begin session">
+                  <span style={{ fontSize: 15 }}>●</span> Begin Session
+                </PhysicalButton>
+              ) : (
+                <>
+                  <PhysicalButton variant="stop" size="lg" onClick={stopSession} ariaLabel="End session">
+                    <span style={{ fontSize: 13 }}>■</span> End Session
+                  </PhysicalButton>
+                  <PhysicalButton variant="ghost" size="lg" onClick={togglePause} ariaLabel={isPaused ? 'Resume' : 'Pause'}>
+                    {isPaused ? '▶ Resume' : '⏸ Pause'}
+                  </PhysicalButton>
+                </>
+              )}
+              {isRecording && (
+                <>
+                  {SPEAKERS.map((sp) => (
+                    <PhysicalButton
+                      key={sp}
+                      variant="ghost"
+                      size="md"
+                      active={activeSpeaker === sp}
+                      onClick={() => setActiveSpeaker(sp)}
+                      ariaLabel={`Speaker ${sp}`}
+                    >
+                      <span style={{
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        width: 18, height: 18, borderRadius: 4, fontSize: 11, fontWeight: 700,
+                        background: SPEAKER_STYLES[sp].background, color: '#fff',
+                      }}>{sp}</span>
+                      {sp}
+                    </PhysicalButton>
+                  ))}
+                  <PhysicalButton
+                    variant="signal"
+                    size="md"
+                    active={isLive}
+                    onClick={toggleStt}
+                    ariaLabel={isLive ? 'Stop live transcription' : 'Start live transcription'}
+                  >
+                    {isLive ? '⊙ Live' : '◎ Live STT'}
+                  </PhysicalButton>
+                </>
+              )}
+            </div>
 
-        <audio ref={audioRef} src={audioUrl || undefined} className="hidden" />
-      </main>
-    </div>
+            {/* Manual entry */}
+            {isRecording && (
+              <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+                <input
+                  value={manualText}
+                  onChange={(e) => setManualText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && manualText.trim()) addManualSegment(); }}
+                  placeholder="Type to add segment manually…"
+                  style={{
+                    flex: 1, background: 'var(--elevated)', border: '1px solid var(--border-soft)',
+                    borderRadius: 8, padding: '8px 12px', color: 'var(--text-primary)',
+                    fontSize: 13, fontFamily: 'inherit', outline: 'none',
+                  }}
+                  aria-label="Manual segment text"
+                />
+                <PhysicalButton
+                  variant="primary"
+                  size="sm"
+                  onClick={addManualSegment}
+                  disabled={!manualText.trim()}
+                >Add</PhysicalButton>
+              </div>
+            )}
+          </Card>
+
+          {/* Transcript */}
+          {(segments.length > 0 || interim) && (
+            <Card style={{ padding: '20px', marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>
+                  Transcript
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--text-hint)' }}>
+                  {segments.length} segment{segments.length !== 1 ? 's' : ''}
+                </span>
+              </div>
+              <div className="vf-transcript-scroll">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {segments.map((seg, i) => (
+                    <SegmentRow
+                      key={seg.id}
+                      segment={seg}
+                      index={i}
+                      onEdit={editSegment}
+                      onDelete={deleteSegment}
+                      onSave={saveSegment}
+                      onCancelEdit={cancelEdit}
+                    />
+                  ))}
+                  {interim && (
+                    <div style={{
+                      display: 'flex', gap: 10, alignItems: 'flex-start',
+                      padding: '10px 12px', opacity: 0.5,
+                    }}>
+                      <div
+                        className="vf-speaker-badge"
+                        style={{ ...SPEAKER_STYLES[activeSpeaker], marginTop: 2 }}
+                      >
+                        {activeSpeaker}
+                      </div>
+                      <span style={{ fontSize: 13.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                        {interim}…
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {/* Output — only shown after session */}
+          {segments.length > 0 && !isRecording && (
+            <>
+              <div style={{ display: 'grid', gap: 14, marginBottom: 16, gridTemplateColumns: '1fr 1fr' }}>
+                {/* Verbatim */}
+                <Card style={{ padding: 20 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>
+                      Verbatim
+                    </span>
+                    <PhysicalButton
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => copyToClipboard(fullVerbatim, 'verbatim')}
+                      ariaLabel="Copy verbatim transcript"
+                    >
+                      {copied === 'verbatim' ? '✓ Copied' : 'Copy'}
+                    </PhysicalButton>
+                  </div>
+                  <div className="vf-output-text">{fullVerbatim || 'No content yet.'}</div>
+                </Card>
+
+                {/* Corrected */}
+                <Card style={{ padding: 20 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>
+                        Corrected
+                      </span>
+                      <span className="vf-ai-chip">AI</span>
+                    </div>
+                    <PhysicalButton
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => copyToClipboard(fullCorrected, 'corrected')}
+                      ariaLabel="Copy corrected transcript"
+                    >
+                      {copied === 'corrected' ? '✓ Copied' : 'Copy'}
+                    </PhysicalButton>
+                  </div>
+                  <div className="vf-output-text">{fullCorrected || 'No content yet.'}</div>
+                </Card>
+              </div>
+
+              {/* Action row */}
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 12 }}>
+                <PhysicalButton variant="ghost" size="md" onClick={resetSession}>
+                  ↺ New Session
+                </PhysicalButton>
+              </div>
+            </>
+          )}
+
+          {/* Footer */}
+          <footer style={{ marginTop: 48, display: 'flex', alignItems: 'center', gap: 12, opacity: 0.35 }}>
+            <hr className="vf-divider" style={{ flex: 1 }} />
+            <BrandMark size={16} />
+            <hr className="vf-divider" style={{ flex: 1 }} />
+          </footer>
+        </main>
+      </div>
+    </>
   );
 }
