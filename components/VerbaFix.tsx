@@ -10,7 +10,8 @@ type Speaker = typeof SPEAKERS[number];
 // ─── Types ───────────────────────────────────────────────────────────────────
 type RecordingError = 'permission_denied' | 'not_supported' | 'mime_unsupported' | 'unknown';
 type SttError = 'stt_unsupported' | 'stt_failed';
-type CopiedTarget = 'verbatim' | 'corrected' | null;
+type ApiError = 'polish_failed' | 'transcribe_failed';
+type CopiedTarget = 'verbatim' | 'corrected' | 'whisper' | null;
 
 interface Segment {
   id: string;
@@ -104,7 +105,6 @@ const STYLES = `
     padding: 40px 24px 80px;
   }
 
-  /* Cards */
   .vf-card {
     background: var(--raised);
     border: 1px solid var(--border-soft);
@@ -124,11 +124,8 @@ const STYLES = `
     border-radius: 50%;
   }
 
-  .vf-card:hover {
-    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-  }
+  .vf-card:hover { box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
 
-  /* Physical Buttons */
   .btn-physical {
     display: inline-flex;
     align-items: center;
@@ -218,7 +215,6 @@ const STYLES = `
     box-shadow: 0 0 0 1px rgba(52,211,153,0.2), 0 2px 8px var(--live-glow);
   }
 
-  /* Status Pill */
   .vf-status-pill {
     display: inline-flex;
     align-items: center;
@@ -231,12 +227,7 @@ const STYLES = `
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
-  .vf-status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
+  .vf-status-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
   .status-idle { background: rgba(255,255,255,0.06); color: var(--text-tertiary); }
   .status-idle .vf-status-dot { background: var(--text-hint); }
   .status-recording { background: var(--record-glow); color: var(--record); }
@@ -248,7 +239,6 @@ const STYLES = `
   .status-processing { background: var(--accent-soft); color: var(--accent); }
   .status-processing .vf-status-dot { background: var(--accent); animation: dot-pulse 0.8s ease-in-out infinite; }
 
-  /* Segment rows */
   .vf-segment-row {
     animation: segment-in 0.3s ease both;
     border-radius: var(--radius-md);
@@ -274,10 +264,8 @@ const STYLES = `
   .vf-segment-row:hover .vf-segment-actions,
   .vf-segment-row:focus-within .vf-segment-actions { opacity: 1; }
 
-  /* Timer */
   .vf-timer-ring { transition: stroke-dashoffset 1s linear; }
 
-  /* Transcript scroll */
   .vf-transcript-scroll {
     overflow-y: auto;
     max-height: 280px;
@@ -288,7 +276,6 @@ const STYLES = `
   .vf-transcript-scroll::-webkit-scrollbar-track { background: transparent; }
   .vf-transcript-scroll::-webkit-scrollbar-thumb { background: var(--border-mid); border-radius: 2px; }
 
-  /* Output areas */
   .vf-output-text {
     background: var(--elevated);
     border: 1px solid var(--border-faint);
@@ -300,9 +287,13 @@ const STYLES = `
     min-height: 80px;
     white-space: pre-wrap;
     word-break: break-word;
-    transition: border-color 0.15s;
   }
-  .vf-output-text:focus-within { border-color: var(--border-mid); }
+
+  .vf-output-shimmer {
+    background: linear-gradient(90deg, var(--elevated) 25%, var(--float) 50%, var(--elevated) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
 
   .vf-ai-chip {
     display: inline-flex;
@@ -319,7 +310,21 @@ const STYLES = `
     text-transform: uppercase;
   }
 
-  /* Error banner */
+  .vf-whisper-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 7px;
+    background: var(--live-glow);
+    border: 1px solid rgba(52,211,153,0.3);
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--live);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
   .vf-error-banner {
     display: flex;
     align-items: center;
@@ -332,15 +337,8 @@ const STYLES = `
     color: var(--red);
   }
 
-  /* Divider */
-  .vf-divider {
-    height: 1px;
-    background: var(--border-faint);
-    border: none;
-    margin: 0;
-  }
+  .vf-divider { height: 1px; background: var(--border-faint); border: none; margin: 0; }
 
-  /* Keyframes */
   @keyframes breathe {
     0%, 100% { opacity: 0.9; transform: scale(1); }
     50% { opacity: 1; transform: scale(1.03); }
@@ -362,9 +360,12 @@ const STYLES = `
     from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }
   }
-  @keyframes signal-sweep {
-    0% { background-position: -200% center; }
-    100% { background-position: 200% center; }
+  @keyframes shimmer {
+    0% { background-position: 200% center; }
+    100% { background-position: -200% center; }
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 `;
 
@@ -386,7 +387,6 @@ function generateId(): string {
   return Math.random().toString(36).slice(2, 9);
 }
 
-// ─── Speaker badge colours ────────────────────────────────────────────────────
 const SPEAKER_STYLES: Record<Speaker, { background: string; color: string }> = {
   A: { background: 'linear-gradient(135deg,#7C7CF8,#5A5AE0)', color: '#fff' },
   B: { background: 'linear-gradient(135deg,#E879A0,#C45580)', color: '#fff' },
@@ -401,19 +401,15 @@ function BrandMark({ size = 32, isRecording = false, isLive = false }: {
   const color = isRecording ? 'var(--record)' : isLive ? 'var(--live)' : 'var(--accent)';
   return (
     <svg
-      width={size}
-      height={size}
-      viewBox="0 0 100 100"
-      fill="none"
+      width={size} height={size} viewBox="0 0 100 100" fill="none"
       aria-hidden="true"
       style={{ animation: 'breathe 4s ease-in-out infinite', flexShrink: 0 }}
     >
-      {[0, 90, 180, 270].map((rotation) => (
-        <g key={rotation} transform={`rotate(${rotation}, 50, 50)`}>
+      {[0, 90, 180, 270].map((r) => (
+        <g key={r} transform={`rotate(${r}, 50, 50)`}>
           <path
             d="M 50 50 C 54 43, 62 38, 62 29 C 62 21, 55 18, 50 22 C 45 26, 46 35, 50 50 Z"
-            fill={color}
-            opacity={0.9}
+            fill={color} opacity={0.9}
           />
         </g>
       ))}
@@ -423,10 +419,12 @@ function BrandMark({ size = 32, isRecording = false, isLive = false }: {
   );
 }
 
-function StatusPill({ isRecording, isPaused, isLive }: {
-  isRecording: boolean; isPaused: boolean; isLive: boolean;
+function StatusPill({ isRecording, isPaused, isLive, isProcessing }: {
+  isRecording: boolean; isPaused: boolean; isLive: boolean; isProcessing: boolean;
 }) {
-  const [status, label] = isRecording && isPaused
+  const [status, label] = isProcessing
+    ? ['processing', 'Processing']
+    : isRecording && isPaused
     ? ['paused', 'Paused']
     : isRecording
     ? ['recording', 'Recording']
@@ -441,16 +439,24 @@ function StatusPill({ isRecording, isPaused, isLive }: {
   );
 }
 
+function Spinner() {
+  return (
+    <span style={{
+      display: 'inline-block', width: 12, height: 12,
+      border: '2px solid var(--border-mid)', borderTopColor: 'var(--accent)',
+      borderRadius: '50%', animation: 'spin 0.7s linear infinite',
+      flexShrink: 0,
+    }} />
+  );
+}
+
 function TimerDisplay({ seconds, isRecording, isPaused }: {
   seconds: number; isRecording: boolean; isPaused: boolean;
 }) {
   const radius = 54;
   const circumference = 2 * Math.PI * radius;
-  const progress = seconds / MAX_SECONDS;
-  const offset = circumference * (1 - progress);
+  const offset = circumference * (1 - seconds / MAX_SECONDS);
   const strokeColor = isPaused ? 'var(--amber)' : isRecording ? 'var(--record)' : 'var(--border-mid)';
-  const timeLeft = MAX_SECONDS - seconds;
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
       <div style={{ position: 'relative', width: 128, height: 128 }}>
@@ -458,13 +464,9 @@ function TimerDisplay({ seconds, isRecording, isPaused }: {
           <circle cx="64" cy="64" r={radius} fill="none" stroke="var(--border-faint)" strokeWidth="2" />
           <circle
             cx="64" cy="64" r={radius}
-            fill="none"
-            stroke={strokeColor}
-            strokeWidth="2"
-            strokeDasharray={circumference}
-            strokeDashoffset={offset}
-            strokeLinecap="round"
-            className="vf-timer-ring"
+            fill="none" stroke={strokeColor} strokeWidth="2"
+            strokeDasharray={circumference} strokeDashoffset={offset}
+            strokeLinecap="round" className="vf-timer-ring"
             style={{ opacity: isRecording ? 1 : 0.3 }}
           />
         </svg>
@@ -475,13 +477,10 @@ function TimerDisplay({ seconds, isRecording, isPaused }: {
           <span style={{
             fontSize: 36, fontWeight: 300, letterSpacing: '-0.02em',
             color: isPaused ? 'var(--amber)' : isRecording ? 'var(--record)' : 'var(--text-secondary)',
-            fontVariantNumeric: 'tabular-nums',
-            lineHeight: 1,
-          }}>
-            {formatTimestamp(seconds)}
-          </span>
+            fontVariantNumeric: 'tabular-nums', lineHeight: 1,
+          }}>{formatTimestamp(seconds)}</span>
           <span style={{ fontSize: 10, color: 'var(--text-hint)', marginTop: 4, letterSpacing: '0.05em' }}>
-            {isRecording ? `${formatTimestamp(timeLeft)} left` : 'max 5 min'}
+            {isRecording ? `${formatTimestamp(MAX_SECONDS - seconds)} left` : 'max 5 min'}
           </span>
         </div>
       </div>
@@ -491,22 +490,16 @@ function TimerDisplay({ seconds, isRecording, isPaused }: {
 
 // ─── Physical Button ──────────────────────────────────────────────────────────
 function PhysicalButton({
-  onClick, disabled = false, variant = 'ghost', size = 'md', active = false,
-  children, ariaLabel,
+  onClick, disabled = false, variant = 'ghost', size = 'md', active = false, children, ariaLabel,
 }: {
-  onClick: () => void;
-  disabled?: boolean;
+  onClick: () => void; disabled?: boolean;
   variant?: 'primary' | 'record' | 'stop' | 'ghost' | 'signal';
-  size?: 'sm' | 'md' | 'lg';
-  active?: boolean;
-  children: React.ReactNode;
-  ariaLabel?: string;
+  size?: 'sm' | 'md' | 'lg'; active?: boolean;
+  children: React.ReactNode; ariaLabel?: string;
 }) {
   return (
     <button
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={ariaLabel}
+      onClick={onClick} disabled={disabled} aria-label={ariaLabel}
       className={`btn-physical btn-${variant} btn-${size}${active ? ' active' : ''}`}
     >
       {children}
@@ -514,52 +507,37 @@ function PhysicalButton({
   );
 }
 
-// ─── Card ─────────────────────────────────────────────────────────────────────
+// ─── Card ────────────────────────────────────────────────────────────────────
 function Card({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
-  return (
-    <div className="vf-card" style={style}>
-      {children}
-    </div>
-  );
+  return <div className="vf-card" style={style}>{children}</div>;
 }
 
 // ─── Error Banner ─────────────────────────────────────────────────────────────
 function ErrorBanner({ message }: { message: string }) {
   return (
     <div className="vf-error-banner" role="alert">
-      <span style={{
-        width: 8, height: 8, borderRadius: '50%',
-        background: 'var(--red)', flexShrink: 0,
-      }} />
+      <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--red)', flexShrink: 0 }} />
       {message}
     </div>
   );
 }
 
 // ─── Segment Row ──────────────────────────────────────────────────────────────
-function SegmentRow({
-  segment, index, onEdit, onDelete, onSave, onCancelEdit,
-}: {
-  segment: Segment;
-  index: number;
+function SegmentRow({ segment, index, onEdit, onDelete, onSave, onCancelEdit }: {
+  segment: Segment; index: number;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
   onSave: (id: string, text: string) => void;
   onCancelEdit: (id: string) => void;
 }) {
   const [draft, setDraft] = useState(segment.text);
-  const badgeStyle = SPEAKER_STYLES[segment.speaker];
-
+  const badge = SPEAKER_STYLES[segment.speaker];
   return (
     <div
       className="vf-segment-row"
       style={{ display: 'flex', gap: 10, alignItems: 'flex-start', animationDelay: `${index * 40}ms` }}
     >
-      <div
-        className="vf-speaker-badge"
-        style={{ ...badgeStyle, marginTop: 2 }}
-        aria-label={`Speaker ${segment.speaker}`}
-      >
+      <div className="vf-speaker-badge" style={{ ...badge, marginTop: 2 }} aria-label={`Speaker ${segment.speaker}`}>
         {segment.speaker}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -586,17 +564,11 @@ function SegmentRow({
             />
             <button
               onClick={() => onSave(segment.id, draft)}
-              style={{
-                background: 'var(--accent)', color: '#fff', border: 'none',
-                borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12,
-              }}
+              style={{ background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12 }}
             >Save</button>
             <button
               onClick={() => onCancelEdit(segment.id)}
-              style={{
-                background: 'var(--elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-soft)',
-                borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12,
-              }}
+              style={{ background: 'var(--elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-soft)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: 12 }}
             >Cancel</button>
           </div>
         ) : (
@@ -608,8 +580,7 @@ function SegmentRow({
       {!segment.editing && (
         <div className="vf-segment-actions" style={{ display: 'flex', gap: 4, flexShrink: 0, marginTop: 2 }}>
           <button
-            onClick={() => onEdit(segment.id)}
-            aria-label="Edit segment"
+            onClick={() => onEdit(segment.id)} aria-label="Edit segment"
             style={{
               background: 'var(--elevated)', border: '1px solid var(--border-soft)',
               borderRadius: 5, width: 26, height: 26, cursor: 'pointer',
@@ -618,8 +589,7 @@ function SegmentRow({
             }}
           >✎</button>
           <button
-            onClick={() => onDelete(segment.id)}
-            aria-label="Delete segment"
+            onClick={() => onDelete(segment.id)} aria-label="Delete segment"
             style={{
               background: 'var(--elevated)', border: '1px solid var(--border-soft)',
               borderRadius: 5, width: 26, height: 26, cursor: 'pointer',
@@ -634,40 +604,31 @@ function SegmentRow({
 }
 
 // ─── Custom Hooks ─────────────────────────────────────────────────────────────
-function useRecorder(onSegmentReady: (duration: number) => void) {
+function useRecorder() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const mimeTypeRef = useRef<string>('');
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [error, setError] = useState<RecordingError | null>(null);
-  const onSegmentReadyRef = useRef(onSegmentReady);
-  useEffect(() => { onSegmentReadyRef.current = onSegmentReady; }, [onSegmentReady]);
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
 
   const start = useCallback(async () => {
     setError(null);
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setError('not_supported');
-      return false;
-    }
+    setAudioBlob(null);
+    if (!navigator.mediaDevices?.getUserMedia) { setError('not_supported'); return false; }
     let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      setError('permission_denied');
-      return false;
-    }
-    const mimeType = ['audio/webm', 'audio/ogg', 'audio/mp4'].find(
-      (t) => MediaRecorder.isTypeSupported(t),
-    );
-    if (!mimeType) {
-      setError('mime_unsupported');
-      return false;
-    }
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch { setError('permission_denied'); return false; }
+    const mimeType = ['audio/webm', 'audio/ogg', 'audio/mp4'].find((t) => MediaRecorder.isTypeSupported(t));
+    if (!mimeType) { setError('mime_unsupported'); return false; }
+    mimeTypeRef.current = mimeType;
     const mr = new MediaRecorder(stream, { mimeType });
     chunksRef.current = [];
     mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
     mr.onstop = () => {
       stream.getTracks().forEach((t) => t.stop());
+      setAudioBlob(new Blob(chunksRef.current, { type: mimeTypeRef.current }));
     };
     mr.start();
     mediaRecorderRef.current = mr;
@@ -677,17 +638,11 @@ function useRecorder(onSegmentReady: (duration: number) => void) {
   }, []);
 
   const pause = useCallback(() => {
-    if (mediaRecorderRef.current?.state === 'recording') {
-      mediaRecorderRef.current.pause();
-      setIsPaused(true);
-    }
+    if (mediaRecorderRef.current?.state === 'recording') { mediaRecorderRef.current.pause(); setIsPaused(true); }
   }, []);
 
   const resume = useCallback(() => {
-    if (mediaRecorderRef.current?.state === 'paused') {
-      mediaRecorderRef.current.resume();
-      setIsPaused(false);
-    }
+    if (mediaRecorderRef.current?.state === 'paused') { mediaRecorderRef.current.resume(); setIsPaused(false); }
   }, []);
 
   const stop = useCallback(() => {
@@ -698,13 +653,10 @@ function useRecorder(onSegmentReady: (duration: number) => void) {
     setIsPaused(false);
   }, []);
 
-  return { isRecording, isPaused, error, start, pause, resume, stop };
+  return { isRecording, isPaused, error, audioBlob, start, pause, resume, stop };
 }
 
-function useSpeechRecognition(
-  onFinal: (text: string) => void,
-  onInterim: (text: string) => void,
-) {
+function useSpeechRecognition(onFinal: (text: string) => void, onInterim: (text: string) => void) {
   const recognitionRef = useRef<any>(null);
   const [isLive, setIsLive] = useState(false);
   const [sttError, setSttError] = useState<SttError | null>(null);
@@ -714,24 +666,17 @@ function useSpeechRecognition(
   useEffect(() => { onInterimRef.current = onInterim; }, [onInterim]);
 
   const start = useCallback(() => {
-    const SpeechRecognition =
-      (typeof window !== 'undefined') &&
+    const SR = typeof window !== 'undefined' &&
       ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
-    if (!SpeechRecognition) {
-      setSttError('stt_unsupported');
-      return;
-    }
-    const rec = new SpeechRecognition();
+    if (!SR) { setSttError('stt_unsupported'); return; }
+    const rec = new SR();
     rec.continuous = true;
     rec.interimResults = true;
     rec.lang = 'en-US';
     rec.onresult = (event: any) => {
       const last = event.results[event.results.length - 1];
-      if (last.isFinal) {
-        onFinalRef.current(last[0].transcript);
-      } else {
-        onInterimRef.current(last[0].transcript);
-      }
+      if (last.isFinal) onFinalRef.current(last[0].transcript);
+      else onInterimRef.current(last[0].transcript);
     };
     rec.onerror = () => setSttError('stt_failed');
     rec.onend = () => setIsLive(false);
@@ -741,22 +686,21 @@ function useSpeechRecognition(
     setSttError(null);
   }, []);
 
-  const stop = useCallback(() => {
-    recognitionRef.current?.stop();
-    setIsLive(false);
-  }, []);
+  const stop = useCallback(() => { recognitionRef.current?.stop(); setIsLive(false); }, []);
 
   return { isLive, sttError, start, stop };
 }
 
-// ─── Error message map ────────────────────────────────────────────────────────
-const ERROR_MESSAGES: Record<RecordingError | SttError, string> = {
+// ─── Error messages ───────────────────────────────────────────────────────────
+const ERROR_MESSAGES: Record<RecordingError | SttError | ApiError, string> = {
   permission_denied: 'Microphone access was denied. Please allow mic access and try again.',
   not_supported: 'Audio recording is not supported in this browser.',
   mime_unsupported: 'No supported audio format found in this browser.',
   unknown: 'An unexpected error occurred.',
   stt_unsupported: 'Live transcription is not supported in this browser.',
   stt_failed: 'Live transcription encountered an error.',
+  polish_failed: 'Claude could not polish the transcript. Showing regex-corrected version.',
+  transcribe_failed: 'Whisper transcription failed. Check your OPENAI_API_KEY.',
 };
 
 // ─── Main Organism ────────────────────────────────────────────────────────────
@@ -767,6 +711,14 @@ export default function VerbaFix() {
   const [interim, setInterim] = useState('');
   const [copied, setCopied] = useState<CopiedTarget>(null);
   const [manualText, setManualText] = useState('');
+  // AI integration state
+  const [polishing, setPolishing] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [aiCorrected, setAiCorrected] = useState<string | null>(null);
+  const [summary, setSummary] = useState<string | null>(null);
+  const [whisperText, setWhisperText] = useState<string | null>(null);
+  const [apiError, setApiError] = useState<ApiError | null>(null);
+
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const secondsRef = useRef(0);
 
@@ -787,15 +739,53 @@ export default function VerbaFix() {
     setInterim('');
   }, []);
 
-  const handleInterim = useCallback((text: string) => {
-    setInterim(text);
-  }, []);
+  const handleInterim = useCallback((text: string) => setInterim(text), []);
 
-  const { isRecording, isPaused, error: recError, start: startRec, pause: pauseRec, resume: resumeRec, stop: stopRec } =
-    useRecorder(() => {});
+  const { isRecording, isPaused, error: recError, audioBlob, start: startRec, pause: pauseRec, resume: resumeRec, stop: stopRec } =
+    useRecorder();
 
   const { isLive, sttError, start: startStt, stop: stopStt } =
     useSpeechRecognition(handleFinal, handleInterim);
+
+  // Polish transcript via Claude
+  const polishTranscript = useCallback(async (segs: Segment[]) => {
+    if (segs.length === 0) return;
+    setPolishing(true);
+    setApiError(null);
+    try {
+      const res = await fetch('/api/polish', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ segments: segs.map(({ speaker, text, timestamp }) => ({ speaker, text, timestamp })) }),
+      });
+      if (!res.ok) throw new Error('polish failed');
+      const data = await res.json();
+      setAiCorrected(data.corrected ?? null);
+      setSummary(data.summary || null);
+    } catch {
+      setApiError('polish_failed');
+    } finally {
+      setPolishing(false);
+    }
+  }, []);
+
+  // Transcribe audio via Whisper
+  const transcribeAudio = useCallback(async (blob: Blob) => {
+    setTranscribing(true);
+    setApiError(null);
+    try {
+      const form = new FormData();
+      form.append('audio', blob);
+      const res = await fetch('/api/transcribe', { method: 'POST', body: form });
+      if (!res.ok) throw new Error('transcribe failed');
+      const data = await res.json();
+      setWhisperText(data.text ?? null);
+    } catch {
+      setApiError('transcribe_failed');
+    } finally {
+      setTranscribing(false);
+    }
+  }, []);
 
   const startSession = useCallback(async () => {
     const ok = await startRec();
@@ -804,6 +794,10 @@ export default function VerbaFix() {
     setSecondsElapsed(0);
     setSegments([]);
     setInterim('');
+    setAiCorrected(null);
+    setSummary(null);
+    setWhisperText(null);
+    setApiError(null);
     timerRef.current = setInterval(() => {
       secondsRef.current += 1;
       setSecondsElapsed(secondsRef.current);
@@ -820,7 +814,19 @@ export default function VerbaFix() {
     stopStt();
     if (timerRef.current) clearInterval(timerRef.current);
     setInterim('');
+    // segments captured at call time via closure — will be stale; use ref pattern
   }, [stopRec, stopStt]);
+
+  // Trigger polish after recording stops and we have segments
+  const segmentsRef = useRef<Segment[]>([]);
+  useEffect(() => { segmentsRef.current = segments; }, [segments]);
+
+  useEffect(() => {
+    // audioBlob appears after MediaRecorder.stop() — signals session just ended
+    if (audioBlob && segmentsRef.current.length > 0) {
+      polishTranscript(segmentsRef.current);
+    }
+  }, [audioBlob, polishTranscript]);
 
   const togglePause = useCallback(() => {
     if (isPaused) resumeRec(); else pauseRec();
@@ -830,9 +836,7 @@ export default function VerbaFix() {
     if (isLive) stopStt(); else startStt();
   }, [isLive, startStt, stopStt]);
 
-  useEffect(() => () => {
-    if (timerRef.current) clearInterval(timerRef.current);
-  }, []);
+  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
   const editSegment = useCallback((id: string) => {
     setSegments((prev) => prev.map((s) => s.id === id ? { ...s, editing: true } : s));
@@ -858,7 +862,7 @@ export default function VerbaFix() {
     segments.map((s) => `Speaker ${s.speaker} (${formatTimestamp(s.timestamp)}): ${correctGrammar(s.text)}`).join('\n'),
   [segments]);
 
-  const copyToClipboard = useCallback((text: string, target: 'verbatim' | 'corrected') => {
+  const copyToClipboard = useCallback((text: string, target: 'verbatim' | 'corrected' | 'whisper') => {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(target);
       setTimeout(() => setCopied(null), 2000);
@@ -871,6 +875,10 @@ export default function VerbaFix() {
     setSecondsElapsed(0);
     setInterim('');
     setCopied(null);
+    setAiCorrected(null);
+    setSummary(null);
+    setWhisperText(null);
+    setApiError(null);
   }, [stopSession]);
 
   const addManualSegment = useCallback(() => {
@@ -878,13 +886,14 @@ export default function VerbaFix() {
     setManualText('');
   }, [addSegment, manualText]);
 
-  const activeError = recError || sttError;
+  const activeError = recError || sttError || apiError;
+  const isProcessing = polishing || transcribing;
+  const correctedOutput = aiCorrected ?? fullCorrected;
 
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: STYLES }} />
       <div className="vf-root">
-        {/* Ambient background */}
         <div className="vf-ambient" aria-hidden="true">
           <div className="vf-orb vf-orb-1" />
           <div className="vf-orb vf-orb-2" />
@@ -895,15 +904,10 @@ export default function VerbaFix() {
           <header style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 32 }}>
             <BrandMark size={36} isRecording={isRecording} isLive={isLive} />
             <div style={{ flex: 1 }}>
-              <h1 style={{
-                fontSize: 20, fontWeight: 600, letterSpacing: '-0.01em',
-                color: 'var(--text-primary)', margin: 0, lineHeight: 1.2,
-              }}>VerbaFix</h1>
-              <p style={{ fontSize: 12, color: 'var(--text-tertiary)', margin: 0, letterSpacing: '0.02em' }}>
-                Precision conversation recorder
-              </p>
+              <h1 style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.01em', color: 'var(--text-primary)', margin: 0, lineHeight: 1.2 }}>VerbaFix</h1>
+              <p style={{ fontSize: 12, color: 'var(--text-tertiary)', margin: 0, letterSpacing: '0.02em' }}>Precision conversation recorder</p>
             </div>
-            <StatusPill isRecording={isRecording} isPaused={isPaused} isLive={isLive} />
+            <StatusPill isRecording={isRecording} isPaused={isPaused} isLive={isLive} isProcessing={isProcessing} />
           </header>
 
           {/* Error banner */}
@@ -913,13 +917,9 @@ export default function VerbaFix() {
             </div>
           )}
 
-          {/* Timer card */}
+          {/* Timer */}
           <Card style={{ padding: '28px 24px', marginBottom: 16, textAlign: 'center' }}>
-            <TimerDisplay
-              seconds={secondsElapsed}
-              isRecording={isRecording}
-              isPaused={isPaused}
-            />
+            <TimerDisplay seconds={secondsElapsed} isRecording={isRecording} isPaused={isPaused} />
           </Card>
 
           {/* Controls */}
@@ -943,9 +943,7 @@ export default function VerbaFix() {
                 <>
                   {SPEAKERS.map((sp) => (
                     <PhysicalButton
-                      key={sp}
-                      variant="ghost"
-                      size="md"
+                      key={sp} variant="ghost" size="md"
                       active={activeSpeaker === sp}
                       onClick={() => setActiveSpeaker(sp)}
                       ariaLabel={`Speaker ${sp}`}
@@ -959,9 +957,7 @@ export default function VerbaFix() {
                     </PhysicalButton>
                   ))}
                   <PhysicalButton
-                    variant="signal"
-                    size="md"
-                    active={isLive}
+                    variant="signal" size="md" active={isLive}
                     onClick={toggleStt}
                     ariaLabel={isLive ? 'Stop live transcription' : 'Start live transcription'}
                   >
@@ -971,7 +967,6 @@ export default function VerbaFix() {
               )}
             </div>
 
-            {/* Manual entry */}
             {isRecording && (
               <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
                 <input
@@ -986,12 +981,7 @@ export default function VerbaFix() {
                   }}
                   aria-label="Manual segment text"
                 />
-                <PhysicalButton
-                  variant="primary"
-                  size="sm"
-                  onClick={addManualSegment}
-                  disabled={!manualText.trim()}
-                >Add</PhysicalButton>
+                <PhysicalButton variant="primary" size="sm" onClick={addManualSegment} disabled={!manualText.trim()}>Add</PhysicalButton>
               </div>
             )}
           </Card>
@@ -1000,40 +990,21 @@ export default function VerbaFix() {
           {(segments.length > 0 || interim) && (
             <Card style={{ padding: '20px', marginBottom: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>
-                  Transcript
-                </span>
-                <span style={{ fontSize: 12, color: 'var(--text-hint)' }}>
-                  {segments.length} segment{segments.length !== 1 ? 's' : ''}
-                </span>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>Transcript</span>
+                <span style={{ fontSize: 12, color: 'var(--text-hint)' }}>{segments.length} segment{segments.length !== 1 ? 's' : ''}</span>
               </div>
               <div className="vf-transcript-scroll">
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   {segments.map((seg, i) => (
-                    <SegmentRow
-                      key={seg.id}
-                      segment={seg}
-                      index={i}
-                      onEdit={editSegment}
-                      onDelete={deleteSegment}
-                      onSave={saveSegment}
-                      onCancelEdit={cancelEdit}
+                    <SegmentRow key={seg.id} segment={seg} index={i}
+                      onEdit={editSegment} onDelete={deleteSegment}
+                      onSave={saveSegment} onCancelEdit={cancelEdit}
                     />
                   ))}
                   {interim && (
-                    <div style={{
-                      display: 'flex', gap: 10, alignItems: 'flex-start',
-                      padding: '10px 12px', opacity: 0.5,
-                    }}>
-                      <div
-                        className="vf-speaker-badge"
-                        style={{ ...SPEAKER_STYLES[activeSpeaker], marginTop: 2 }}
-                      >
-                        {activeSpeaker}
-                      </div>
-                      <span style={{ fontSize: 13.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                        {interim}…
-                      </span>
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 12px', opacity: 0.5 }}>
+                      <div className="vf-speaker-badge" style={{ ...SPEAKER_STYLES[activeSpeaker], marginTop: 2 }}>{activeSpeaker}</div>
+                      <span style={{ fontSize: 13.5, color: 'var(--text-secondary)', fontStyle: 'italic' }}>{interim}…</span>
                     </div>
                   )}
                 </div>
@@ -1041,55 +1012,87 @@ export default function VerbaFix() {
             </Card>
           )}
 
-          {/* Output — only shown after session */}
+          {/* Output cards — after session */}
           {segments.length > 0 && !isRecording && (
             <>
               <div style={{ display: 'grid', gap: 14, marginBottom: 16, gridTemplateColumns: '1fr 1fr' }}>
                 {/* Verbatim */}
                 <Card style={{ padding: 20 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>
-                      Verbatim
-                    </span>
-                    <PhysicalButton
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => copyToClipboard(fullVerbatim, 'verbatim')}
-                      ariaLabel="Copy verbatim transcript"
-                    >
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>Verbatim</span>
+                    <PhysicalButton variant="ghost" size="sm" onClick={() => copyToClipboard(fullVerbatim, 'verbatim')} ariaLabel="Copy verbatim">
                       {copied === 'verbatim' ? '✓ Copied' : 'Copy'}
                     </PhysicalButton>
                   </div>
-                  <div className="vf-output-text">{fullVerbatim || 'No content yet.'}</div>
+                  <div className="vf-output-text">{fullVerbatim || 'No content.'}</div>
                 </Card>
 
-                {/* Corrected */}
+                {/* AI Corrected */}
                 <Card style={{ padding: 20 }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>
-                        Corrected
-                      </span>
-                      <span className="vf-ai-chip">AI</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>Corrected</span>
+                      <span className="vf-ai-chip">{polishing ? 'AI…' : 'AI'}</span>
                     </div>
-                    <PhysicalButton
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => copyToClipboard(fullCorrected, 'corrected')}
-                      ariaLabel="Copy corrected transcript"
-                    >
+                    <PhysicalButton variant="ghost" size="sm" onClick={() => copyToClipboard(correctedOutput, 'corrected')} disabled={polishing} ariaLabel="Copy corrected">
                       {copied === 'corrected' ? '✓ Copied' : 'Copy'}
                     </PhysicalButton>
                   </div>
-                  <div className="vf-output-text">{fullCorrected || 'No content yet.'}</div>
+                  {polishing ? (
+                    <div
+                      className="vf-output-text vf-output-shimmer"
+                      style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                      aria-busy="true" aria-label="Claude is polishing the transcript"
+                    >
+                      <Spinner />
+                      <span style={{ color: 'var(--text-hint)', fontSize: 13 }}>Claude is polishing…</span>
+                    </div>
+                  ) : (
+                    <div className="vf-output-text">{correctedOutput || 'No content.'}</div>
+                  )}
                 </Card>
               </div>
 
+              {/* Summary */}
+              {summary && (
+                <Card style={{ padding: 20, marginBottom: 16 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>Summary</span>
+                    <span className="vf-ai-chip">AI</span>
+                  </div>
+                  <p style={{ fontSize: 14, lineHeight: 1.65, color: 'var(--text-secondary)', margin: 0 }}>{summary}</p>
+                </Card>
+              )}
+
+              {/* Whisper output */}
+              {whisperText && (
+                <Card style={{ padding: 20, marginBottom: 16 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', letterSpacing: '0.07em', textTransform: 'uppercase' }}>Whisper Transcript</span>
+                      <span className="vf-whisper-chip">Whisper</span>
+                    </div>
+                    <PhysicalButton variant="ghost" size="sm" onClick={() => copyToClipboard(whisperText, 'whisper')} ariaLabel="Copy Whisper transcript">
+                      {copied === 'whisper' ? '✓ Copied' : 'Copy'}
+                    </PhysicalButton>
+                  </div>
+                  <div className="vf-output-text">{whisperText}</div>
+                </Card>
+              )}
+
               {/* Action row */}
               <div style={{ display: 'flex', justifyContent: 'center', gap: 12 }}>
-                <PhysicalButton variant="ghost" size="md" onClick={resetSession}>
-                  ↺ New Session
-                </PhysicalButton>
+                {audioBlob && !whisperText && (
+                  <PhysicalButton
+                    variant="signal" size="md"
+                    onClick={() => transcribeAudio(audioBlob)}
+                    disabled={transcribing}
+                    ariaLabel="Transcribe with Whisper"
+                  >
+                    {transcribing ? <><Spinner /> Transcribing…</> : '◎ Whisper Transcribe'}
+                  </PhysicalButton>
+                )}
+                <PhysicalButton variant="ghost" size="md" onClick={resetSession}>↺ New Session</PhysicalButton>
               </div>
             </>
           )}
