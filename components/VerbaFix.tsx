@@ -226,7 +226,9 @@ function triggerDownload(content: string, filename: string, mime: string): void 
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  document.body.appendChild(a);
   a.click();
+  document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
 
@@ -377,6 +379,7 @@ function SegmentRow({ segment, index, speakerName, onEdit, onDelete, onSave, onC
 // ─── Custom Hooks
 function useRecorder() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const mimeTypeRef = useRef<string>('');
   const [isRecording, setIsRecording] = useState(false);
@@ -388,7 +391,10 @@ function useRecorder() {
     setError(null); setAudioBlob(null);
     if (!navigator.mediaDevices?.getUserMedia) { setError('not_supported'); return false; }
     let stream: MediaStream;
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+    }
     catch { setError('permission_denied'); return false; }
     const mimeType = ['audio/webm','audio/ogg','audio/mp4'].find((t) => MediaRecorder.isTypeSupported(t));
     if (!mimeType) { setError('mime_unsupported'); return false; }
@@ -398,6 +404,7 @@ function useRecorder() {
     mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
     mr.onstop = () => {
       stream.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
       setAudioBlob(new Blob(chunksRef.current, { type: mimeTypeRef.current }));
     };
     mr.start();
@@ -419,6 +426,15 @@ function useRecorder() {
       mediaRecorderRef.current.stop();
     }
     setIsRecording(false); setIsPaused(false);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+      }
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
   }, []);
 
   return { isRecording, isPaused, error, audioBlob, start, pause, resume, stop };
@@ -635,11 +651,10 @@ export default function VerbaFix() {
     }
   }, [audioBlob, polishTranscript]);
 
-  // Save draft after each segment added during recording
+  // Save draft after each segment added or edited
   useEffect(() => {
-    if (segments.length > 0 && !isRecording) return; // only save mid-session
     if (segments.length > 0) saveDraft(segments, secondsRef.current, aiCorrected, summary);
-  }, [segments, isRecording, saveDraft, aiCorrected, summary]);
+  }, [segments, saveDraft, aiCorrected, summary]);
 
   const togglePause = useCallback(() => { if (isPaused) resumeRec(); else pauseRec(); }, [isPaused, resumeRec, pauseRec]);
   const toggleStt = useCallback(() => { if (isLive) stopStt(); else startStt(); }, [isLive, startStt, stopStt]);
@@ -709,7 +724,7 @@ export default function VerbaFix() {
     setSegments([]); setSecondsElapsed(0); setInterim(''); setCopied(null);
     setAiCorrected(null); setSummary(null); setWhisperText(null); setApiError(null); setHasDraft(false);
     setSpeakerNames(DEFAULT_SPEAKER_NAMES); setAudioUrl(null);
-    localStorage.removeItem(STORAGE_KEY);
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* private browsing */ }
   }, [stopSession]);
 
   const addManualSegment = useCallback(() => { addSegment(manualText); setManualText(''); }, [addSegment, manualText]);

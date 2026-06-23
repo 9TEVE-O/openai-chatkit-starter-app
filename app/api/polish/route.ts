@@ -67,7 +67,10 @@ ${verbatim}`;
   const rawText: string = data.content?.[0]?.text ?? '';
 
   try {
-    const parsed = JSON.parse(rawText);
+    const jsonStart = rawText.indexOf('{');
+    const jsonEnd = rawText.lastIndexOf('}');
+    const jsonText = jsonStart !== -1 && jsonEnd !== -1 ? rawText.slice(jsonStart, jsonEnd + 1) : rawText;
+    const parsed = JSON.parse(jsonText);
     return NextResponse.json({
       corrected: typeof parsed.corrected === 'string' ? parsed.corrected : rawText,
       summary: typeof parsed.summary === 'string' ? parsed.summary : '',
