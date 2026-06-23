@@ -7,6 +7,8 @@ const MAX_SECONDS = 300;
 const STORAGE_KEY = 'verbafix_draft';
 const SPEAKERS = ['A', 'B', 'C', 'D'] as const;
 type Speaker = typeof SPEAKERS[number];
+type SpeakerNames = Record<Speaker, string>;
+const DEFAULT_SPEAKER_NAMES: SpeakerNames = { A: 'Speaker A', B: 'Speaker B', C: 'Speaker C', D: 'Speaker D' };
 
 // ─── Types
 type RecordingError = 'permission_denied' | 'not_supported' | 'mime_unsupported' | 'unknown';
@@ -28,6 +30,7 @@ interface DraftState {
   secondsElapsed: number;
   aiCorrected: string | null;
   summary: string | null;
+  speakerNames?: SpeakerNames;
 }
 
 // ─── Design Tokens
@@ -324,8 +327,8 @@ function ErrorBanner({ message }: { message: string }) {
   );
 }
 
-function SegmentRow({ segment, index, onEdit, onDelete, onSave, onCancelEdit }: {
-  segment: Segment; index: number;
+function SegmentRow({ segment, index, speakerName, onEdit, onDelete, onSave, onCancelEdit }: {
+  segment: Segment; index: number; speakerName: string;
   onEdit: (id: string) => void; onDelete: (id: string) => void;
   onSave: (id: string, text: string) => void; onCancelEdit: (id: string) => void;
 }) {
@@ -334,7 +337,7 @@ function SegmentRow({ segment, index, onEdit, onDelete, onSave, onCancelEdit }: 
   return (
     <div className="vf-segment-row"
       style={{ display:'flex',gap:10,alignItems:'flex-start',animationDelay:`${index*40}ms` }}>
-      <div className="vf-speaker-badge" style={{ ...badge,marginTop:2 }} aria-label={`Speaker ${segment.speaker}`}>
+      <div className="vf-speaker-badge" style={{ ...badge,marginTop:2 }} aria-label={speakerName}>
         {segment.speaker}
       </div>
       <div style={{ flex:1,minWidth:0 }}>
@@ -479,6 +482,8 @@ export default function VerbaFix() {
   const [whisperText, setWhisperText] = useState<string | null>(null);
   const [apiError, setApiError] = useState<ApiError | null>(null);
   const [hasDraft, setHasDraft] = useState(false);
+  const [speakerNames, setSpeakerNames] = useState<SpeakerNames>(DEFAULT_SPEAKER_NAMES);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const secondsRef = useRef(0);
@@ -505,15 +510,19 @@ export default function VerbaFix() {
         setSecondsElapsed(draft.secondsElapsed ?? 0);
         if (draft.aiCorrected) setAiCorrected(draft.aiCorrected);
         if (draft.summary) setSummary(draft.summary);
+        if (draft.speakerNames) setSpeakerNames(draft.speakerNames);
       }
     } catch { /* ignore */ }
     setHasDraft(false);
   }, []);
 
+  const speakerNamesRef = useRef<SpeakerNames>(DEFAULT_SPEAKER_NAMES);
+  useEffect(() => { speakerNamesRef.current = speakerNames; }, [speakerNames]);
+
   const saveDraft = useCallback((segs: Segment[], secs: number, ai: string | null, sum: string | null) => {
     if (segs.length === 0) return;
     try {
-      const draft: DraftState = { segments: segs, secondsElapsed: secs, aiCorrected: ai, summary: sum };
+      const draft: DraftState = { segments: segs, secondsElapsed: secs, aiCorrected: ai, summary: sum, speakerNames: speakerNamesRef.current };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
     } catch { /* quota exceeded — silently ignore */ }
   }, []);
@@ -636,15 +645,60 @@ export default function VerbaFix() {
   const toggleStt = useCallback(() => { if (isLive) stopStt(); else startStt(); }, [isLive, startStt, stopStt]);
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
+  // Audio playback URL from recorded blob
+  useEffect(() => {
+    if (!audioBlob) return;
+    const url = URL.createObjectURL(audioBlob);
+    setAudioUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [audioBlob]);
+
+  // Keyboard shortcuts — all handlers accessed via refs to avoid stale closures
+  const isRecordingRef = useRef(false);
+  useEffect(() => { isRecordingRef.current = isRecording; }, [isRecording]);
+  const startSessionRef = useRef(startSession);
+  useEffect(() => { startSessionRef.current = startSession; }, [startSession]);
+  const stopSessionRef = useRef(stopSession);
+  useEffect(() => { stopSessionRef.current = stopSession; }, [stopSession]);
+  const togglePauseRef = useRef(togglePause);
+  useEffect(() => { togglePauseRef.current = togglePause; }, [togglePause]);
+  const toggleSttRef = useRef(toggleStt);
+  useEffect(() => { toggleSttRef.current = toggleStt; }, [toggleStt]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      switch (e.code) {
+        case 'Space':
+          e.preventDefault();
+          if (!isRecordingRef.current) startSessionRef.current();
+          else stopSessionRef.current();
+          break;
+        case 'KeyP':
+          if (isRecordingRef.current) togglePauseRef.current();
+          break;
+        case 'KeyL':
+          if (isRecordingRef.current) toggleSttRef.current();
+          break;
+        case 'Digit1': if (isRecordingRef.current) setActiveSpeaker('A'); break;
+        case 'Digit2': if (isRecordingRef.current) setActiveSpeaker('B'); break;
+        case 'Digit3': if (isRecordingRef.current) setActiveSpeaker('C'); break;
+        case 'Digit4': if (isRecordingRef.current) setActiveSpeaker('D'); break;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const editSegment = useCallback((id: string) => setSegments((p) => p.map((s) => s.id===id?{...s,editing:true}:s)), []);
   const saveSegment = useCallback((id: string, text: string) => setSegments((p) => p.map((s) => s.id===id?{...s,text,editing:false}:s)), []);
   const cancelEdit = useCallback((id: string) => setSegments((p) => p.map((s) => s.id===id?{...s,editing:false}:s)), []);
   const deleteSegment = useCallback((id: string) => setSegments((p) => p.filter((s) => s.id!==id)), []);
 
   const fullVerbatim = useMemo(() =>
-    segments.map((s) => `Speaker ${s.speaker} (${formatTimestamp(s.timestamp)}): ${s.text}`).join('\n'), [segments]);
+    segments.map((s) => `${speakerNames[s.speaker]} (${formatTimestamp(s.timestamp)}): ${s.text}`).join('\n'), [segments, speakerNames]);
   const fullCorrected = useMemo(() =>
-    segments.map((s) => `Speaker ${s.speaker} (${formatTimestamp(s.timestamp)}): ${correctGrammar(s.text)}`).join('\n'), [segments]);
+    segments.map((s) => `${speakerNames[s.speaker]} (${formatTimestamp(s.timestamp)}): ${correctGrammar(s.text)}`).join('\n'), [segments, speakerNames]);
 
   const copyToClipboard = useCallback((text: string, target: 'verbatim'|'corrected'|'whisper') => {
     navigator.clipboard.writeText(text).then(() => { setCopied(target); setTimeout(() => setCopied(null), 2000); });
@@ -654,6 +708,7 @@ export default function VerbaFix() {
     stopSession();
     setSegments([]); setSecondsElapsed(0); setInterim(''); setCopied(null);
     setAiCorrected(null); setSummary(null); setWhisperText(null); setApiError(null); setHasDraft(false);
+    setSpeakerNames(DEFAULT_SPEAKER_NAMES); setAudioUrl(null);
     localStorage.removeItem(STORAGE_KEY);
   }, [stopSession]);
 
@@ -681,6 +736,8 @@ export default function VerbaFix() {
               <p style={{ fontSize:12,color:'var(--text-tertiary)',margin:0,letterSpacing:'0.02em' }}>Precision conversation recorder</p>
             </div>
             <StatusPill isRecording={isRecording} isPaused={isPaused} isLive={isLive} isProcessing={isProcessing} />
+            <a href="/" style={{ fontSize:12,color:'var(--text-hint)',textDecoration:'none',letterSpacing:'0.03em',flexShrink:0 }}
+              aria-label="Back to chat">← Chat</a>
           </header>
 
           {/* Draft restore banner */}
@@ -725,9 +782,9 @@ export default function VerbaFix() {
                 <>
                   {SPEAKERS.map((sp) => (
                     <PhysicalButton key={sp} variant="ghost" size="md" active={activeSpeaker===sp}
-                      onClick={() => setActiveSpeaker(sp)} ariaLabel={`Speaker ${sp}`}>
+                      onClick={() => setActiveSpeaker(sp)} ariaLabel={speakerNames[sp]}>
                       <span style={{ display:'inline-flex',alignItems:'center',justifyContent:'center',width:18,height:18,borderRadius:4,fontSize:11,fontWeight:700,background:SPEAKER_STYLES[sp].background,color:'#fff' }}>{sp}</span>
-                      {sp}
+                      <span style={{ maxWidth:72,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>{speakerNames[sp]}</span>
                     </PhysicalButton>
                   ))}
                   <PhysicalButton variant="signal" size="md" active={isLive} onClick={toggleStt}
@@ -748,7 +805,32 @@ export default function VerbaFix() {
                 <PhysicalButton variant="primary" size="sm" onClick={addManualSegment} disabled={!manualText.trim()}>Add</PhysicalButton>
               </div>
             )}
+
+            {/* Speaker name editor */}
+            {(isRecording || segments.length > 0) && (
+              <div style={{ marginTop:16,display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:8 }}>
+                {SPEAKERS.map((sp) => (
+                  <label key={sp} style={{ display:'flex',alignItems:'center',gap:6 }}>
+                    <span className="vf-speaker-badge" style={{ ...SPEAKER_STYLES[sp],width:22,height:22,fontSize:10,flexShrink:0 }}>{sp}</span>
+                    <input
+                      value={speakerNames[sp]}
+                      onChange={(e) => setSpeakerNames((prev) => ({ ...prev, [sp]: e.target.value || DEFAULT_SPEAKER_NAMES[sp] }))}
+                      placeholder={DEFAULT_SPEAKER_NAMES[sp]}
+                      style={{ flex:1,minWidth:0,background:'var(--elevated)',border:'1px solid var(--border-soft)',borderRadius:5,padding:'4px 8px',color:'var(--text-primary)',fontSize:12,fontFamily:'inherit',outline:'none' }}
+                      aria-label={`Name for speaker ${sp}`}
+                    />
+                  </label>
+                ))}
+              </div>
+            )}
           </Card>
+
+          {/* Keyboard hints */}
+          {!isRecording && segments.length === 0 && (
+            <p style={{ textAlign:'center',fontSize:11,color:'var(--text-hint)',letterSpacing:'0.04em',marginTop:8,marginBottom:0 }}>
+              Space start · P pause · L live STT · 1–4 speaker
+            </p>
+          )}
 
           {/* Transcript */}
           {(segments.length > 0 || interim) && (
@@ -761,6 +843,7 @@ export default function VerbaFix() {
                 <div style={{ display:'flex',flexDirection:'column',gap:2 }}>
                   {segments.map((seg,i) => (
                     <SegmentRow key={seg.id} segment={seg} index={i}
+                      speakerName={speakerNames[seg.speaker]}
                       onEdit={editSegment} onDelete={deleteSegment} onSave={saveSegment} onCancelEdit={cancelEdit} />
                   ))}
                   {interim && (
@@ -777,6 +860,16 @@ export default function VerbaFix() {
           {/* Output cards */}
           {segments.length > 0 && !isRecording && (
             <>
+              {/* Audio playback */}
+              {audioUrl && (
+                <Card style={{ padding:20,marginBottom:16 }}>
+                  <div style={{ display:'flex',alignItems:'center',gap:8,marginBottom:12 }}>
+                    <span style={{ fontSize:12,fontWeight:600,color:'var(--text-tertiary)',letterSpacing:'0.07em',textTransform:'uppercase' }}>Recording</span>
+                  </div>
+                  <audio controls src={audioUrl} style={{ width:'100%',colorScheme:'dark' }} aria-label="Session recording playback" />
+                </Card>
+              )}
+
               <div style={{ display:'grid',gap:14,marginBottom:16,gridTemplateColumns:'1fr 1fr' }}>
                 {/* Verbatim */}
                 <Card style={{ padding:20 }}>
