@@ -1,5 +1,5 @@
-import App from "./App";
+import VerbaFix from "@/components/VerbaFix";
 
 export default function Home() {
-  return <App />;
+  return <VerbaFix />;
 }
